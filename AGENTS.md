@@ -2,53 +2,68 @@
 
 ## Repo state
 
-- Greenfield repo: no code, no commits, no lint/test/typecheck tooling yet.
-- The only source of truth is `prober-rec-build.md` — a complete design doc containing
-  ready-to-use code for the entire project. Read it before writing anything.
-- No CI, no pre-commit, no package manifest exists. If you add tooling, add its
-  config and a runnable command in the same change.
+- Implemented FastAPI service per `prober-rec-build.md` (the design doc). Layout:
+  `scripts/probe.sh` → `app/probe.py` → `app/recommender.py` + `app/huggingface.py`
+  → `app/main.py` (routes + inline HTML UI), static fallback catalog in
+  `app/models.json`, unit tests in `tests/`.
+- The design doc is the source of intent, **but its ready-to-paste code has known
+  bugs — the repo copies supersede it. Do not re-copy from the doc blindly**:
+  - `probe.sh`: a bare `>` at end of line is a bash syntax error (script won't parse).
+  - quantization regex truncates `Q4_K_M` to `Q4_K`; `BF16` matches `F16`.
+  - `workload_score()` KeyErrors on workloads outside its fixed dict (HF-derived
+    `uses` contains e.g. `"assistant"` → HTTP 500).
+  - `requirements.txt` omits `huggingface_hub`.
+- No CI, lint, or formatter exists. If you add tooling, add its config and a
+  runnable command in the same change.
 
-## Architecture (from the design doc)
-
-- Target: FastAPI service that probes local hardware and recommends llama.cpp GGUF
-  models that fit the machine's memory budget.
-- Flow: `scripts/probe.sh` (shell probe, emits JSON) → `app/probe.py` (parses it,
-  with a pure-Python psutil fallback) → `app/recommender.py` (fit/scoring) →
-  `app/main.py` (FastAPI routes + inline HTML UI).
-- **The doc's second half supersedes the first half.** The static `app/models.json`
-  catalog (sections 1–6) is explicitly replaced by dynamic Hugging Face GGUF
-  discovery (`app/huggingface.py`, "Revised architecture"). Implement the HF
-  version; treat `models.json` as the prototype fallback, not the goal.
-- Hard requirement from the doc: never recommend a model whose estimated runtime
-  footprint (weights + KV cache + context + overhead + safety margin) exceeds the
-  conservative memory budget. Hardware fit must dominate ranking; popularity is
-  only a tiebreaker.
-
-## Commands (as specified in the doc; verify they work once code exists)
+## Commands (verified)
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # needs python3-venv: sudo apt install python3-venv python3-pip
 pip install -r requirements.txt
-pip install huggingface_hub        # needed for the HF discovery path, not in requirements.txt
-chmod +x scripts/probe.sh          # probe.py executes this file directly
+python3 -m unittest discover -s tests -t .           # unit tests (16 tests)
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Smoke check: `curl http://localhost:8000/hardware` and
-`curl 'http://localhost:8000/recommendations?workload=coding'`.
+`curl 'http://localhost:8000/recommendations?workload=coding'` (response includes
+`"source"`: `huggingface` or `static`).
+
+## Architecture
+
+- **HF discovery is the primary catalog; `models.json` is only the fallback** when
+  the hub is unreachable (doc's "Revised architecture" supersedes the static phase).
+- Hard requirement, enforced by tests: never recommend a model whose estimated
+  runtime footprint (weights + type overhead + per-4096-token context allowance)
+  exceeds the conservative budget. Popularity is capped at 10 points so it can
+  only break ties.
+- `app/huggingface.py` targets **huggingface_hub 2.x**: `HfApi(timeout=)` and
+  `list_models(direction=)` no longer exist; `model_info(expand=...)` cannot be
+  combined with `files_metadata=True` (sizes only come from the latter), and
+  expanding nullifies other fields — so sizes/metadata come from one
+  `model_info(..., files_metadata=True)` call and summaries from `list_models`.
+- A dead endpoint is caught by a TCP preflight before any API call: hf_hub's own
+  retries cost ~23s per request otherwise. Failures set a 60s negative cache
+  (`mark_failed()`); tune with `HF_TIMEOUT` / `HF_ENDPOINT` env vars.
+- Memory budget (`available_memory_mb`): unified → 0.8×RAM; discrete GPU →
+  0.8×VRAM + 0.35×RAM; CPU-only → 0.6×RAM. The `context` query param is the
+  *requested* context (default 4096); models whose max context is below it are
+  excluded, and footprint scales with it.
+- `/models/{id}/command`: single-segment ids resolve against `models.json` first,
+  then discovery; HF repo ids (`owner/name`) need the two-segment route
+  `/models/{owner}/{name}/command`, or any unlisted GGUF repo is fetched live.
 
 ## Gotchas
 
-- `scripts/probe.sh` must be executable or `run_probe()` fails (it falls back to the
-  CPU-only Python probe, silently hiding GPU/VRAM detection — check for that).
-- The shell probe writes real numbers into JSON with no quoting; empty `nvidia-smi` /
-  `rocminfo` output can produce invalid JSON, which also triggers the silent
-  fallback. Validate `/hardware` output when touching the probe.
-- The doc's `requirements.txt` is missing `huggingface_hub` and lists nothing for
-  testing — don't assume it is complete.
-- `probe.sh` downloads from a Hugging Face bucket and honors `HF_TOKEN`,
-  `LLAMA_BUCKET`, and `LLAMA_VERSION` env vars; it needs `curl` (and `zstd` for
-  `.zst` payloads).
-- Endpoint vocabulary is inconsistent in the doc (`?workload=` vs `?use=`). The
-  implemented code uses `workload`; the "future API" sections use `use`. Pick one
-  and keep it consistent across routes, UI, and docs.
+- `scripts/probe.sh` must be executable, or `run_probe()` raises and the app falls
+  back to the CPU-only Python probe — GPU/VRAM detection disappears silently.
+  `run_probe()` also raises if the shell probe reports `ram_bytes: 0` (no psutil
+  in the calling `python3`), because budget 0 would return zero recommendations.
+- The shell probe writes unquoted JSON; empty `nvidia-smi`/`rocminfo` output can
+  yield invalid JSON, which also silently falls back. Validate `/hardware` when
+  touching the probe.
+- Endpoint vocabulary: implemented code uses `?workload=` everywhere (validated
+  against `general|coding|personal|embedding|rag`); the doc's future-API sections
+  say `?use=` — keep it as `workload`.
+- `probe.sh` honors `HF_TOKEN`, `LLAMA_BUCKET`, `LLAMA_VERSION` and needs `curl`
+  (plus `zstd` for `.zst` payloads).

@@ -1,0 +1,64 @@
+[
+  {
+    "id": "qwen3.5-0.8b",
+    "name": "Qwen3.5 0.8B",
+    "family": "Qwen",
+    "repo": "ggml-org/Qwen3.5-0.8B-GGUF",
+    "type": "chat",
+    "parameters_b": 0.8,
+    "context": 32768,
+    "quantizations": {
+      "Q4_K_M": 600,
+      "Q8_0": 1000
+    },
+    "uses": [
+      "general",
+      "personal",
+      "assistant",
+      "fast",
+      "low-memory"
+    ]
+  },
+  {
+    "id": "qwen3.5-4b",
+    "name": "Qwen3.5 4B",
+    "family": "Qwen",
+    "repo": "Qwen/Qwen3.5-4B-GGUF",
+    "type": "chat",
+    "parameters_b": 4.0,
+    "context": 262144,
+    "quantizations": {
+      "Q4_K_M": 2800,
+      "Q5_K_M": 3300,
+      "Q8_0": 4600
+    },
+    "uses": [
+      "general",
+      "coding",
+      "personal",
+      "assistant",
+      "reasoning",
+      "tools"
+    ]
+  },
+  {
+    "id": "qwen3-embedding-4b",
+    "name": "Qwen3-Embedding 4B",
+    "family": "Qwen",
+    "repo": "Qwen/Qwen3-Embedding-4B-GGUF",
+    "type": "embedding",
+    "parameters_b": 4.0,
+    "context": 32768,
+    "quantizations": {
+      "Q4_K_M": 2500,
+      "Q5_K_M": 3000,
+      "Q8_0": 4200
+    },
+    "uses": [
+      "embedding",
+      "rag",
+      "semantic-search",
+      "retrieval"
+    ]
+  }
+]
